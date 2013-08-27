@@ -1,9 +1,15 @@
 {% with request.user.customer.current_subscription as subscription %}
     {% if subscription %}
         {% if subscription.status == "active" %}
-            <div class="alert alert-info">
-                Your subscription will automatically renew in <strong>{{ subscription.current_period_end|timeuntil }}</strong>.
-            </div>
+            {% if subscription.cancel_at_period_end %}
+                <div class="alert alert-info">
+                    Your subscription will automatically cancel in <strong>{{ subscription.current_period_end|timeuntil }}</strong>.
+                </div>
+            {% else %}
+                <div class="alert alert-info">
+                    Your subscription will automatically renew in <strong>{{ subscription.current_period_end|timeuntil }}</strong>.
+                </div>
+            {% endif %}
         {% else %}
             {% if subscription.status == "trialing" %}
                 {% if subscription.plan and request.user.customer.card_kind %}
