@@ -1,13 +1,19 @@
 {% with request.user.customer.current_subscription as subscription %}
     {% if subscription %}
         {% if subscription.status == "active" %}
-            {% if subscription.cancel_at_period_end %}
-                <div class="alert alert-info">
-                    Your subscription will automatically cancel in <strong>{{ subscription.current_period_end|timeuntil }}</strong>.
-                </div>
+            {% if subscription.is_period_current %}
+                {% if subscription.cancel_at_period_end %}
+                    <div class="alert alert-info">
+                        Your <strong>{{ subscription.plan_display }}</strong> plan will automatically cancel in <strong>{{ subscription.current_period_end|timeuntil }}</strong>.
+                    </div>
+                {% else %}
+                    <div class="alert alert-info">
+                        Your <strong>{{ subscription.plan_display }}</strong> plan will automatically renew in <strong>{{ subscription.current_period_end|timeuntil }}</strong>.
+                    </div>
+                {% endif %}
             {% else %}
-                <div class="alert alert-info">
-                    Your subscription will automatically renew in <strong>{{ subscription.current_period_end|timeuntil }}</strong>.
+                <div class="alert alert-danger lead">
+                    Your subscription has been <strong>canceled</strong>.
                 </div>
             {% endif %}
         {% else %}
@@ -25,16 +31,16 @@
                 {% if subscription.status == "canceled" %}
                     {% if subscription.is_period_current %}
                         <div class="alert alert-warning lead">
-                            Your subscription has been <strong>canceled</strong> but you can continue to use the site for another <strong>{{ subscription.current_period_end|timeuntil }}</strong>.
+                            Your <strong>{{ subscription.plan_display }}</strong> plan has been <strong>canceled</strong> but you can continue to use the site for another <strong>{{ subscription.current_period_end|timeuntil }}</strong>.
                         </div>
                     {% else %}
                         <div class="alert alert-danger lead">
-                            Your subscription has been <strong>canceled</strong>.
+                            Your <strong>{{ subscription.plan_display }}</strong> plan has been <strong>canceled</strong>.
                         </div>
                     {% endif %}
                 {% else %}
                     <div class="alert alert-danger lead">
-                        Your subscription is <strong>{{ subscription.status }}</strong>.
+                        Your <strong>{{ subscription.plan_display }}</strong> plan is <strong>{{ subscription.status }}</strong>.
                     </div>
                 {% endif %}
             {% endif %}
