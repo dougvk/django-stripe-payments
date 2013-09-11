@@ -22,7 +22,8 @@ from .settings import (
     PAYMENTS_PLANS,
     plan_from_stripe_id,
     SEND_EMAIL_RECEIPTS,
-    TRIAL_PERIOD_FOR_USER_CALLBACK
+    TRIAL_PERIOD_FOR_USER_CALLBACK,
+    PLAN_QUANTITY_CALLBACK
 )
 from .signals import (
     cancelled,
@@ -208,7 +209,7 @@ class Event(StripeObject):
 class Transfer(StripeObject):
     # pylint: disable-msg=C0301
     event = models.ForeignKey(Event, related_name="transfers")
-    amount = models.DecimalField(decimal_places=2, max_digits=7)
+    amount = models.DecimalField(decimal_places=2, max_digits=9)
     status = models.CharField(max_length=25)
     date = models.DateTimeField()
     description = models.TextField(null=True, blank=True)
@@ -217,10 +218,10 @@ class Transfer(StripeObject):
     adjustment_gross = models.DecimalField(decimal_places=2, max_digits=7, null=True)
     charge_count = models.IntegerField(null=True)
     charge_fees = models.DecimalField(decimal_places=2, max_digits=7, null=True)
-    charge_gross = models.DecimalField(decimal_places=2, max_digits=7, null=True)
+    charge_gross = models.DecimalField(decimal_places=2, max_digits=9, null=True)
     collected_fee_count = models.IntegerField(null=True)
     collected_fee_gross = models.DecimalField(decimal_places=2, max_digits=7, null=True)
-    net = models.DecimalField(decimal_places=2, max_digits=7, null=True)
+    net = models.DecimalField(decimal_places=2, max_digits=9, null=True)
     refund_count = models.IntegerField(null=True)
     refund_fees = models.DecimalField(decimal_places=2, max_digits=7, null=True)
     refund_gross = models.DecimalField(decimal_places=2, max_digits=7, null=True)
@@ -363,27 +364,53 @@ class Customer(StripeObject):
         )
         current.status = sub.status
         current.cancel_at_period_end = sub.cancel_at_period_end
-        current.period_end = convert_tstamp(sub, "current_period_end")
+        current.current_period_end = convert_tstamp(sub, "current_period_end")
         current.save()
         cancelled.send(sender=self, stripe_response=sub)
 
     @classmethod
-    def create(cls, user):
+    def create(cls, user, card=None, plan=None, charge_immediately=True):
 
-        trial_days = None
-        if TRIAL_PERIOD_FOR_USER_CALLBACK:
+        if card and plan:
+            plan = PAYMENTS_PLANS[plan]["stripe_plan_id"]
+        elif DEFAULT_PLAN:
+            plan = PAYMENTS_PLANS[DEFAULT_PLAN]["stripe_plan_id"]
+        else:
+            plan = None
+
+        trial_end = None
+        if TRIAL_PERIOD_FOR_USER_CALLBACK and plan:
             trial_days = TRIAL_PERIOD_FOR_USER_CALLBACK(user)
+            trial_end = datetime.datetime.utcnow() + datetime.timedelta(
+                days=trial_days
+            )
 
         stripe_customer = stripe.Customer.create(
-            email=user.email
-        )
-        cus = Customer.objects.create(
-            user=user,
-            stripe_id=stripe_customer.id
+            email=user.email,
+            card=card,
+            plan=plan or DEFAULT_PLAN,
+            trial_end=trial_end
         )
 
-        if DEFAULT_PLAN and trial_days:
-            cus.subscribe(plan=DEFAULT_PLAN, trial_days=trial_days)
+        if stripe_customer.active_card:
+            cus = cls.objects.create(
+                user=user,
+                stripe_id=stripe_customer.id,
+                card_fingerprint=stripe_customer.active_card.fingerprint,
+                card_last_4=stripe_customer.active_card.last4,
+                card_kind=stripe_customer.active_card.type
+            )
+        else:
+            cus = cls.objects.create(
+                user=user,
+                stripe_id=stripe_customer.id,
+            )
+
+        if plan:
+            if stripe_customer.subscription:
+                cus.sync_current_subscription(cu=stripe_customer)
+            if charge_immediately:
+                cus.send_invoice()
 
         return cus
 
@@ -409,7 +436,8 @@ class Customer(StripeObject):
     def send_invoice(self):
         try:
             invoice = stripe.Invoice.create(customer=self.stripe_id)
-            invoice.pay()
+            if invoice.amount_due > 0:
+                invoice.pay()
             return True
         except stripe.InvalidRequestError:
             return False  # There was nothing to invoice
@@ -489,13 +517,20 @@ class Customer(StripeObject):
             charge_immediately=charge_immediately
         )
 
-    def subscribe(self, plan, quantity=1, trial_days=None,
+    def subscribe(self, plan, quantity=None, trial_days=None,
                   charge_immediately=True):
+        if quantity is None:
+            if PLAN_QUANTITY_CALLBACK is not None:
+                quantity = PLAN_QUANTITY_CALLBACK(self)
+            else:
+                quantity = 1
         cu = self.stripe_customer
         if trial_days:
             resp = cu.update_subscription(
                 plan=PAYMENTS_PLANS[plan]["stripe_plan_id"],
-                trial_end=timezone.now() + datetime.timedelta(days=trial_days),
+                trial_end=datetime.datetime.utcnow() + datetime.timedelta(
+                    days=trial_days
+                ),
                 quantity=quantity
             )
         else:
@@ -503,7 +538,7 @@ class Customer(StripeObject):
                 plan=PAYMENTS_PLANS[plan]["stripe_plan_id"],
                 quantity=quantity
             )
-        self.sync_current_subscription()
+        self.sync_current_subscription(cu)
         if charge_immediately:
             self.send_invoice()
         subscription_made.send(sender=self, plan=plan, stripe_response=resp)
